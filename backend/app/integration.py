@@ -23,8 +23,45 @@ from app.models import (
     DeliveryTask, DiffRecord, ExtractRule, IncrCursor, ParseLogEntry,
     ProxyNode, QualitySample, RawExtractedContent, SampleMethod,
     SchedulePlan, SiteConfig, SiteType, StorageBatch, UrlFingerprint,
+    domain_matches, normalize_host,
 )
 from app.store import store
+
+
+# ---------------------------------------------------------------------------
+# 站点归属：入口 URL 必须属于作业声明的站点
+# ---------------------------------------------------------------------------
+
+def partition_urls_by_site(
+    urls: list[str],
+    declared_site: SiteConfig,
+    known_sites: list[SiteConfig] | None = None,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """把入口 URL 按站点归属拆开。
+
+    返回 (属于声明站点的 URL, 被拦下的地址明细)。声明站点未核验、Robots 禁止或
+    网址域名与其归属不符时，地址一律不进该站点的采集链路。
+    """
+    owned: list[str] = []
+    rejected: list[dict[str, str]] = []
+    known = known_sites or []
+    for url in urls:
+        host = normalize_host(url)
+        if not host:
+            rejected.append({"url": url, "reason": "无法解析网址域名"})
+            continue
+        if not domain_matches(host, declared_site.domain):
+            owner = next((s for s in known if domain_matches(host, s.domain)), None)
+            if owner is not None:
+                reason = (f"越权地址：域名 {host} 归属站点 {owner.site_id}（{owner.domain}），"
+                          f"不能写入站点 {declared_site.site_id}（{declared_site.domain}）的批次")
+            else:
+                reason = f"越权地址：域名 {host} 不属于站点 {declared_site.domain}"
+            rejected.append({"url": url, "reason": reason})
+            continue
+        owned.append(url)
+    return owned, rejected
+
 
 
 # ---------------------------------------------------------------------------
@@ -33,9 +70,12 @@ from app.store import store
 
 def run_crawl_pipeline(site_row: dict[str, Any], job_row: dict[str, Any],
                        extract_rows: list[dict[str, Any]],
-                       clean_rows: list[dict[str, Any]]) -> StorageBatch | None:
+                       clean_rows: list[dict[str, Any]],
+                       known_site_rows: list[dict[str, Any]] | None = None,
+                       ) -> StorageBatch | None:
     """端到端采集链路：站点配置 → 作业创建 → 内容抽取 → 字段清洗 → 批次存储。
 
+    入口 URL 按域名归属站点分流：不属于作业站点的地址一律拦截，绝不写进本站批次。
     返回完整的 StorageBatch 或 None（不可恢复错误时）。
     """
     # Step 1: 站点验证（crawl_site）
@@ -47,6 +87,13 @@ def run_crawl_pipeline(site_row: dict[str, Any], job_row: dict[str, Any],
     job = CrawlJobSpec.from_seed_row(job_row, site=site)
     if not job.entry_urls:
         return None  # 没有入口 URL
+
+    known_sites = [SiteConfig.from_seed_row(row) for row in known_site_rows or []]
+    owned_urls, rejected = partition_urls_by_site(job.entry_urls, site, known_sites)
+    job.entry_urls = owned_urls
+    if not owned_urls:
+        # 全部入口都不属于本站：不生成任何批次，避免跨站点串批。
+        return None
 
     # Step 3: 内容抽取（content_extract）
     rules = [ExtractRule.from_seed_row(er) for er in extract_rows if er.get("status") == "生效中"]
@@ -60,6 +107,7 @@ def run_crawl_pipeline(site_row: dict[str, Any], job_row: dict[str, Any],
         if rule is None:
             continue
         raw = _simulate_extract(url, rule)
+        raw.site_id = site.site_id
         extracted_contents.append(raw)
 
         # 记录解析日志（parse_log）
@@ -75,6 +123,16 @@ def run_crawl_pipeline(site_row: dict[str, Any], job_row: dict[str, Any],
         parse_logs.append(log)
         _persist_parse_log(log)
 
+    for rejected_url in rejected:
+        _persist_parse_log(ParseLogEntry(
+            record_id=f"PLOG-{job.job_id}-BLOCK-{len(parse_logs)+1:04d}",
+            source_url=rejected_url["url"],
+            parse_rule_id="SITE-ATTRIBUTION",
+            parse_result="已拦截",
+            error_type="站点越权",
+            error_detail=rejected_url["reason"],
+        ))
+
     job.completed_pages = len(extracted_contents)
     job.failed_pages = sum(1 for r in extracted_contents if r.has_errors())
     job.status = "已完成" if job.failed_pages == 0 else "部分失败"
@@ -87,6 +145,7 @@ def run_crawl_pipeline(site_row: dict[str, Any], job_row: dict[str, Any],
 
     for raw in extracted_contents:
         cc = _apply_clean_rules(raw, clean_rules)
+        cc.site_id = site.site_id
         cleaned.append(cc)
 
     # Step 5: 批次存储（batch_store）
@@ -100,6 +159,8 @@ def run_crawl_pipeline(site_row: dict[str, Any], job_row: dict[str, Any],
         stored_at=datetime.now(timezone.utc).isoformat(),
         status="已落盘",
         records=cleaned,
+        site_id=site.site_id,
+        site_domain=site.domain,
     )
     batch.checksum = batch.compute_checksum()
     batch.status = "校验通过" if all(c.is_valid() for c in cleaned) else "校验失败"

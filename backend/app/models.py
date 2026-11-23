@@ -67,6 +67,15 @@ class SampleMethod(str, Enum):
     TOP_N = "头N条"
 
 
+class LedgerEntryStatus(str, Enum):
+    """来源清册条目状态：只有「可领取」才允许被调度消费。"""
+    PENDING = "待核"
+    CLAIMABLE = "可领取"
+    CLAIMED = "已领取"
+    STORED = "已入库"
+    BLOCKED = "已拦截"
+
+
 class ArchiveFormat(str, Enum):
     GZIP = "gzip"
     LZ4 = "lz4"
@@ -75,8 +84,151 @@ class ArchiveFormat(str, Enum):
 
 
 # ---------------------------------------------------------------------------
+# 站点归属辅助
+# ---------------------------------------------------------------------------
+
+def normalize_host(url: str) -> str:
+    """从入口 URL 取出主机名并规范化为小写，去掉端口与末尾点。"""
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = f"//{raw}"
+        parsed = urlparse(raw, scheme="https")
+    else:
+        parsed = urlparse(raw)
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    return host
+
+
+def domain_matches(host: str, domain: str) -> bool:
+    """主机是否落在站点域名之下：域名本身或任意子域名。
+
+    只做按标签边界的匹配，避免 `evil-example.com` 冒充 `example.com`。
+    """
+    host = str(host or "").strip().lower().rstrip(".")
+    domain = str(domain or "").strip().lower().rstrip(".")
+    if not host or not domain:
+        return False
+    return host == domain or host.endswith(f".{domain}")
+
+
+# 兼容历史调用名
+host_matches_domain = domain_matches
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(str(value).strip())
+    except (ValueError, TypeError):
+        return default
+
+
+def split_entry_urls(raw: Any) -> list[str]:
+    """入口 URL 既支持逗号分隔，也支持换行/中文逗号分隔。"""
+    text = str(raw or "")
+    for sep in ("\n", "；", ";", "，", " "):
+        text = text.replace(sep, ",")
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+# ---------------------------------------------------------------------------
 # 跨模块数据类
 # ---------------------------------------------------------------------------
+
+@dataclass
+class SiteAddress:
+    """一条待采地址的站点归属判定结果，供清册与作业共用。"""
+    url: str
+    host: str
+    site_id: str
+    site_domain: str
+    eligible: bool
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "url": self.url,
+            "host": self.host,
+            "site_id": self.site_id,
+            "site_domain": self.site_domain,
+            "eligible": self.eligible,
+            "reason": self.reason,
+        }
+
+
+@dataclass
+class LedgerEntry:
+    """站点来源清册中的一条地址，记录实际批次与核验依据。"""
+    entry_id: str
+    ledger_id: str
+    url: str
+    host: str
+    site_id: str
+    site_domain: str
+    status: LedgerEntryStatus
+    origin: str = "原始提交"          # 原始提交 / 补交
+    submitted_at: str = ""
+    verified_at: str | None = None
+    proof: str = ""
+    batch_id: str = ""
+    job_id: str = ""
+    note: str = ""
+    claimed_at: str | None = None
+    stored_at: str | None = None
+    source_site_id: str = ""
+
+    def is_claimable(self) -> bool:
+        return self.status == LedgerEntryStatus.CLAIMABLE
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "条目编号": self.entry_id,
+            "清册编号": self.ledger_id,
+            "来源URL": self.url,
+            "地址主机": self.host,
+            "站点编号": self.site_id,
+            "站点域名": self.site_domain,
+            "条目状态": self.status.value,
+            "提交来源": self.origin,
+            "提交时间": self.submitted_at,
+            "核验时间": self.verified_at or "",
+            "核验依据": self.proof,
+            "批次编号": self.batch_id,
+            "作业编号": self.job_id,
+            "处理说明": self.note,
+            "领取时间": self.claimed_at or "",
+            "入库时间": self.stored_at or "",
+            "实际来源站点": self.source_site_id or self.site_id,
+        }
+
+
+@dataclass
+class LedgerClaim:
+    """一次领取的结果：只包含已有资格、仍可消费的地址。"""
+    ledger_id: str
+    batch_id: str
+    claimed: list[LedgerEntry] = field(default_factory=list)
+    blocked: list[dict[str, Any]] = field(default_factory=list)
+    waiting: list[dict[str, Any]] = field(default_factory=list)
+    per_site: dict[str, str] = field(default_factory=dict)
+    executable_sites: list[str] = field(default_factory=list)
+    can_execute: bool = False
+    message: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "清册编号": self.ledger_id,
+            "批次编号": self.batch_id,
+            "可执行": self.can_execute,
+            "可执行站点": self.executable_sites,
+            "本次领取地址": [e.to_dict() for e in self.claimed],
+            "越权拦截": self.blocked,
+            "等待核验": self.waiting,
+            "站点批次": self.per_site,
+            "说明": self.message,
+        }
+
 
 @dataclass
 class SiteConfig:
@@ -91,6 +243,8 @@ class SiteConfig:
     registered_at: str
     verified: bool = False
     last_validated: str | None = None
+    verification_proof: str = ""
+    verified_at: str | None = None
 
     @classmethod
     def from_seed_row(cls, row: dict[str, Any]) -> SiteConfig:
@@ -109,8 +263,14 @@ class SiteConfig:
             access_method=str(row.get("接入方式", "direct")),
             registered_at=str(row.get("注册时间", "")),
             verified=row.get("status") == "已验证",
-            last_validated=str(row.get("注册时间", "")),
+            last_validated=str(row.get("核验时间") or row.get("注册时间", "")),
+            verification_proof=str(row.get("核验证明", "")),
+            verified_at=str(row.get("核验时间") or "") or None,
         )
+
+    def owns_host(self, host: str) -> bool:
+        """判断 URL 主机是否属于本站点域名（含子域名）。"""
+        return host_matches_domain(host, self.domain)
 
     def is_crawlable(self) -> bool:
         return self.verified and self.robots_policy.lower() != "disallow"
@@ -133,22 +293,22 @@ class CrawlJobSpec:
     @classmethod
     def from_seed_row(cls, row: dict[str, Any], site: SiteConfig | None = None) -> CrawlJobSpec:
         raw_url = str(row.get("入口URL", ""))
-        # 支持逗号分隔的多 URL
-        urls = [u.strip() for u in raw_url.split(",") if u.strip()] if raw_url else []
+        # 支持逗号/换行分隔的多 URL
+        urls = split_entry_urls(raw_url)
         try:
-            md = int(row.get("最大深度", 3))
+            md = _to_int(row.get("最大深度", 3), 3)
         except (ValueError, TypeError):
             md = 3
         try:
-            cc = int(row.get("并发线程", 4))
+            cc = _to_int(row.get("并发线程", 4), 4)
         except (ValueError, TypeError):
             cc = 4
         try:
-            cp = int(row.get("完成页数", 0))
+            cp = _to_int(row.get("完成页数", 0), 0)
         except (ValueError, TypeError):
             cp = 0
         try:
-            fp = int(row.get("失败页数", 0))
+            fp = _to_int(row.get("失败页数", 0), 0)
         except (ValueError, TypeError):
             fp = 0
         return cls(
@@ -198,7 +358,7 @@ class UrlFingerprint:
     @classmethod
     def from_seed_row(cls, row: dict[str, Any]) -> UrlFingerprint:
         try:
-            dup = int(row.get("重复次数", 0))
+            dup = _to_int(row.get("重复次数", 0), 0)
         except (ValueError, TypeError):
             dup = 0
         return cls(
@@ -234,7 +394,7 @@ class ExtractRule:
             field_mapping={"raw": str(row.get("字段映射", ""))},
             data_type=str(row.get("数据类型", "string")),
             clean_regex=str(row.get("清洗正则", "")),
-            extract_order=int(row.get("抽取顺序", 0)),
+            extract_order=_to_int(row.get("抽取顺序", 0), 0),
             status=str(row.get("status", "草稿")),
         )
 
@@ -247,6 +407,8 @@ class RawExtractedContent:
     raw_fields: dict[str, str] = field(default_factory=dict)
     extracted_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     errors: list[str] = field(default_factory=list)
+    site_id: str = ""
+    ledger_entry_id: str = ""
 
     def has_errors(self) -> bool:
         return len(self.errors) > 0
@@ -266,14 +428,18 @@ class CleanRule:
 
     @classmethod
     def from_seed_row(cls, row: dict[str, Any]) -> CleanRule:
+        try:
+            clean_type = CleanType(str(row.get("清洗类型", CleanType.TRIM.value)))
+        except ValueError:
+            clean_type = CleanType.TRIM
         return cls(
             rule_id=str(row.get("规则编号", "")),
             target_field=str(row.get("目标字段", "")),
-            clean_type=CleanType(str(row.get("清洗类型", CleanType.TRIM.value))),
+            clean_type=clean_type,
             expression=str(row.get("处理表达式", "")),
             null_strategy=str(row.get("空值策略", "skip")),
             validation_range=str(row.get("校验范围", "")),
-            clean_order=int(row.get("清洗顺序", 0)),
+            clean_order=_to_int(row.get("清洗顺序", 0), 0),
             status=str(row.get("status", "草稿")),
         )
 
@@ -286,6 +452,9 @@ class CleanedContent:
     fields: dict[str, Any] = field(default_factory=dict)
     clean_errors: list[str] = field(default_factory=list)
     cleaned_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    site_id: str = ""
+    ledger_entry_id: str = ""
+    source_proof: str = ""
 
     def is_valid(self) -> bool:
         if len(self.clean_errors) > 0:
@@ -308,19 +477,25 @@ class StorageBatch:
     stored_at: str = ""
     status: str = "采集中"
     records: list[CleanedContent] = field(default_factory=list)
+    site_id: str = ""
+    site_domain: str = ""
+    ledger_id: str = ""
 
     @classmethod
     def from_seed_row(cls, row: dict[str, Any]) -> StorageBatch:
         return cls(
             batch_id=str(row.get("批次编号", "")),
             source_job_id=str(row.get("来源作业", "")),
-            row_count=int(row.get("数据行数", 0)),
+            row_count=_to_int(row.get("数据行数", 0), 0),
             storage_path=str(row.get("存储路径", "")),
             compression=str(row.get("压缩格式", "gzip")),
             schema_version=str(row.get("Schema版本", "v1")),
             checksum=str(row.get("校验摘要", "")),
             stored_at=str(row.get("入库时间", "")),
             status=str(row.get("status", "采集中")),
+            site_id=str(row.get("站点编号", "")),
+            site_domain=str(row.get("站点域名", "")),
+            ledger_id=str(row.get("清册编号", "")),
         )
 
     def compute_checksum(self) -> str:
@@ -387,7 +562,7 @@ class QualitySample:
         except ValueError:
             sm = SampleMethod.RANDOM
         try:
-            ss = int(row.get("样本数量", 0))
+            ss = _to_int(row.get("样本数量", 0), 0)
         except (ValueError, TypeError):
             ss = 0
         try:
@@ -471,7 +646,7 @@ class AntiBlockStrategy:
         except ValueError:
             at = AntiType.IP_LIMIT
         try:
-            interval = int(row.get("请求间隔", 1000))
+            interval = _to_int(row.get("请求间隔", 1000), 1000)
         except (ValueError, TypeError):
             interval = 1000
         return cls(
@@ -500,11 +675,11 @@ class CrawlLimitRule:
 
     @classmethod
     def from_seed_row(cls, row: dict[str, Any]) -> CrawlLimitRule:
-        try: interval = int(row.get("请求间隔", 1000))
+        try: interval = _to_int(row.get("请求间隔", 1000), 1000)
         except (ValueError, TypeError): interval = 1000
-        try: conc = int(row.get("并发上限", 1))
+        try: conc = _to_int(row.get("并发上限", 1), 1)
         except (ValueError, TypeError): conc = 1
-        try: daily = int(row.get("日请求量", 10000))
+        try: daily = _to_int(row.get("日请求量", 10000), 10000)
         except (ValueError, TypeError): daily = 10000
         return cls(
             rule_id=str(row.get("策略编号", "")),
@@ -538,7 +713,7 @@ class ParseLogEntry:
             parse_rule_id=str(row.get("解析规则", "")),
             parse_result=str(row.get("解析结果", "")),
             error_type=str(row.get("异常类型", "")),
-            retry_count=int(row.get("重试次数", 0)),
+            retry_count=_to_int(row.get("重试次数", 0), 0),
             error_detail=str(row.get("错误详情", "")),
             recorded_at=str(row.get("记录时间", "")),
         )
@@ -565,8 +740,8 @@ class IncrCursor:
             incr_field=str(row.get("增量字段", "")),
             last_cursor=str(row.get("上次游标", "")),
             current_cursor=str(row.get("当前游标", "")),
-            new_count=int(row.get("新增数量", 0)),
-            updated_count=int(row.get("更新数量", 0)),
+            new_count=_to_int(row.get("新增数量", 0), 0),
+            updated_count=_to_int(row.get("更新数量", 0), 0),
             last_sync=str(row.get("最后同步", "")),
             status=str(row.get("status", "待初始化")),
         )
@@ -618,7 +793,7 @@ class CostRecord:
             record_id=str(row.get("记录编号", "")),
             site=str(row.get("采集站点", "")),
             billing_cycle=str(row.get("计费周期", "")),
-            request_count=int(row.get("请求次数", 0)),
+            request_count=_to_int(row.get("请求次数", 0), 0),
             data_volume_mb=float(row.get("数据流量", 0)),
             proxy_usage_hours=float(row.get("代理用量", 0)),
             estimated_cost=float(row.get("费用预估", 0)),
@@ -647,7 +822,7 @@ class ArchivePolicy:
         except ValueError:
             af = ArchiveFormat.GZIP
         try:
-            rd = int(row.get("保留时长", 90))
+            rd = _to_int(row.get("保留时长", 90), 90)
         except (ValueError, TypeError):
             rd = 90
         return cls(

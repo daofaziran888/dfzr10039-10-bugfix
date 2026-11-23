@@ -72,6 +72,7 @@ npm run dev
 | 差异检测 | `diff_check` | 差异记录 | 记录编号、目标站点、检测页面 |
 | 导出任务 | `export_task` | 导出记录 | 记录编号、数据来源、导出格式 |
 | 操作审计 | `audit_log` | 审计记录 | 记录编号、操作模块、操作人 |
+| 站点来源清册 | `source_ledger` | 来源清册 | 清册编号、站点范围、核验依据 |
 
 ## 约定
 
@@ -80,6 +81,20 @@ npm run dev
   `frontend/src/domain/<模块>.ts`，用于承载真实业务差异并维持36题位容量。
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
+
+## 站点来源清册
+
+采集入口的网址必须与站点归属相符。`source_ledger` 把「网址 → 站点 → 核验依据 → 实际批次」
+记成一本账，`crawl_job` / `batch_store` 都从这份清册取数：
+
+- 提交：`POST /api/ledger/submit`（混合来源，逐条判定）、`POST /api/ledger/single`（单独一个地址）。
+  越权地址直接 `已拦截`；未核验站点只能是 `待核`，只暴露待核说明。
+- 补证：`POST /api/ledger/proof`，只升级本站点的待核条目，已领取/已入库地址不会重跑。
+- 领取：`POST /api/ledger/{清册}/claim`，只消费 `可领取` 地址，按站点各自生成作业与批次。
+- 落库：`POST /api/ledger/{清册}/store`，每条记录保留来源 URL、站点编号与核验依据。
+- 回查：`GET /api/ledger/{清册}/trace`（原提交+补交+条目+批次真实内容）、
+  `GET /api/ledger/inventory`（按站点的来源清册，含历史批次）。
+- 前端工作台：`/source_ledger`。
 
 领域：数据工程
 子方向：数据采集、爬虫与RPA

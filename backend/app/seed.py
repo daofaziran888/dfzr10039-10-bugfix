@@ -797,3 +797,163 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
   '来源节点': '操作审计样例3',
   '审计结果': '操作审计样例3'}]
 }
+
+# ---------------------------------------------------------------------------
+# 站点来源清册：一条可复现「A 已验证、B 待核验」混合提交的演示账本
+# ---------------------------------------------------------------------------
+
+SEED_ROWS["crawl_site"] = [
+    {
+        "id": 1, "status": "已验证", "pending": False, "abnormal": False,
+        "站点编号": "SITE-A", "站点域名": "a.example.com",
+        "站点类型": "新闻门户", "Robots协议": "allow",
+        "站点语言": "zh-CN", "地域归属": "CN",
+        "接入方式": "direct", "注册时间": "2026-09-01",
+        "核验证明": "ICP-A-2026，域名归属证明 A 已归档",
+        "核验时间": "2026-11-01T09:00:00+00:00",
+    },
+    {
+        "id": 2, "status": "待验证", "pending": True, "abnormal": False,
+        "站点编号": "SITE-B", "站点域名": "b.example.net",
+        "站点类型": "内容平台", "Robots协议": "allow",
+        "站点语言": "zh-CN", "地域归属": "CN",
+        "接入方式": "direct", "注册时间": "2026-09-02",
+        "核验证明": "", "核验时间": "",
+    },
+    {
+        "id": 3, "status": "站点变更", "pending": True, "abnormal": False,
+        "站点编号": "SITE-C", "站点域名": "c.example.org",
+        "站点类型": "社区论坛", "Robots协议": "allow",
+        "站点语言": "zh-CN", "地域归属": "CN",
+        "接入方式": "direct", "注册时间": "2026-09-03",
+        "核验证明": "", "核验时间": "",
+    },
+]
+
+SEED_ROWS["source_ledger"] = [{
+    "id": 1,
+    "status": "部分可领取",
+    "pending": True,
+    "abnormal": False,
+    "清册编号": "LEDG-0001",
+    "清册名称": "混合来源清册（值班样本）",
+    "站点范围": "SITE-A，SITE-B",
+    "条目总数": 3,
+    "待核数": 1,
+    "可领取数": 1,
+    "已领取数": 0,
+    "已入库数": 1,
+    "越权拦截数": 0,
+    "批次范围": "BATCH-LEDG-0001-SITE-A",
+    "创建人": "值班员",
+    "创建时间": "2026-11-20T09:30:00+00:00",
+}]
+
+SEED_ROWS["ledger_entry"] = [
+    {
+        "id": 1, "status": "已入库", "pending": False, "abnormal": False,
+        "条目编号": "ENT-LEDG-0001-0001", "清册编号": "LEDG-0001",
+        "来源URL": "https://a.example.com/article/1", "地址主机": "a.example.com",
+        "站点编号": "SITE-A", "站点域名": "a.example.com",
+        "条目状态": "已入库", "提交来源": "原始提交",
+        "提交时间": "2026-11-20T09:30:00+00:00",
+        "核验时间": "2026-11-01T09:00:00+00:00",
+        "核验依据": "ICP-A-2026，域名归属证明 A 已归档",
+        "批次编号": "BATCH-LEDG-0001-SITE-A",
+        "作业编号": "JOB-LEDG-0001-SITE-A",
+        "处理说明": "历史批次已确认来源，可直接回查",
+        "领取时间": "2026-11-20T10:00:00+00:00",
+        "入库时间": "2026-11-20T10:05:00+00:00",
+        "实际来源站点": "SITE-A",
+    },
+    {
+        "id": 2, "status": "可领取", "pending": True, "abnormal": False,
+        "条目编号": "ENT-LEDG-0001-0002", "清册编号": "LEDG-0001",
+        "来源URL": "https://a.example.com/article/2", "地址主机": "a.example.com",
+        "站点编号": "SITE-A", "站点域名": "a.example.com",
+        "条目状态": "可领取", "提交来源": "原始提交",
+        "提交时间": "2026-11-20T09:30:00+00:00",
+        "核验时间": "2026-11-01T09:00:00+00:00",
+        "核验依据": "ICP-A-2026，域名归属证明 A 已归档",
+        "批次编号": "", "作业编号": "",
+        "处理说明": "",
+        "领取时间": "", "入库时间": "",
+        "实际来源站点": "SITE-A",
+    },
+    {
+        "id": 3, "status": "待核", "pending": True, "abnormal": False,
+        "条目编号": "ENT-LEDG-0001-0003", "清册编号": "LEDG-0001",
+        "来源URL": "https://b.example.net/post/9", "地址主机": "b.example.net",
+        "站点编号": "SITE-B", "站点域名": "b.example.net",
+        "条目状态": "待核", "提交来源": "原始提交",
+        "提交时间": "2026-11-20T09:30:00+00:00",
+        "核验时间": "", "核验依据": "",
+        "批次编号": "", "作业编号": "",
+        "处理说明": "站点 SITE-B（b.example.net）域名归属待核验，仅可查看待核说明，不得借用其他站点授权入库",
+        "领取时间": "", "入库时间": "",
+        "实际来源站点": "SITE-B",
+    },
+]
+
+SEED_ROWS["ledger_submission"] = [{
+    "id": 1, "status": "已记录", "pending": True, "abnormal": False,
+    "提交编号": "SUBM-0001", "清册编号": "LEDG-0001",
+    "提交类型": "原始提交", "站点编号": "SITE-A",
+    "来源URL": "https://a.example.com/article/1,https://b.example.net/post/9",
+    "条目编号": "ENT-LEDG-0001-0001,ENT-LEDG-0001-0002,ENT-LEDG-0001-0003",
+    "新增条目数": 3, "可领取数": 2, "待核数": 1, "拦截数": 0,
+    "重复地址": "", "提交人": "值班员",
+    "提交时间": "2026-11-20T09:30:00+00:00",
+    "说明": "混合来源提交：A 已核验，B 待核验",
+}]
+
+SEED_ROWS["ledger_claim"] = [{
+    "id": 1, "status": "已领取", "pending": False, "abnormal": False,
+    "领取编号": "CLAIM-0001", "清册编号": "LEDG-0001",
+    "领取人": "调度员", "领取时间": "2026-11-20T10:00:00+00:00",
+    "领取条目数": 1, "等待条目数": 1, "拦截条目数": 0,
+    "可执行站点": "SITE-A", "批次范围": "BATCH-LEDG-0001-SITE-A",
+    "等待说明": "SITE-B:站点 SITE-B（b.example.net）域名归属待核验，仅可查看待核说明，不得借用其他站点授权入库",
+}]
+
+SEED_ROWS["site_verification"] = [{
+    "id": 1, "status": "已验证", "pending": False, "abnormal": False,
+    "核验编号": "VERI-0001", "清册编号": "LEDG-0001",
+    "站点编号": "SITE-A", "站点域名": "a.example.com",
+    "核验结果": "已验证", "核验依据": "ICP-A-2026，域名归属证明 A 已归档",
+    "核验时间": "2026-11-01T09:00:00+00:00", "操作人": "核验员",
+    "重跑拦截": "",
+}]
+
+SEED_ROWS["batch_store"].extend([
+    {
+        "id": 4, "status": "校验通过", "pending": False, "abnormal": False,
+        "批次编号": "BATCH-LEDG-0001-SITE-A", "来源作业": "JOB-LEDG-0001-SITE-A",
+        "数据行数": 1, "存储路径": "/data/batches/LEDG-0001/SITE-A/",
+        "压缩格式": "gzip", "Schema版本": "v1", "校验摘要": "historical-a",
+        "入库时间": "2026-11-20T10:05:00+00:00",
+        "站点编号": "SITE-A", "站点域名": "a.example.com", "清册编号": "LEDG-0001",
+    },
+])
+
+SEED_ROWS["crawl_job"].extend([
+    {
+        "id": 4, "status": "已完成", "pending": False, "abnormal": False,
+        "作业编号": "JOB-LEDG-0001-SITE-A", "目标站点": "a.example.com",
+        "入口URL": "https://a.example.com/article/1",
+        "最大深度": "3", "并发线程": "4", "调度策略": "interval",
+        "完成页数": "1", "失败页数": "0",
+        "清册编号": "LEDG-0001", "站点编号": "SITE-A", "站点域名": "a.example.com",
+        "核验状态": "已验证", "核验依据": "ICP-A-2026，域名归属证明 A 已归档",
+    },
+    {
+        "id": 5, "status": "待执行", "pending": True, "abnormal": True,
+        "作业编号": "JOB-LEDG-0001-SITE-B", "目标站点": "b.example.net",
+        "入口URL": "https://b.example.net/post/9",
+        "最大深度": "3", "并发线程": "4", "调度策略": "interval",
+        "完成页数": "0", "失败页数": "0",
+        "清册编号": "LEDG-0001", "站点编号": "SITE-B", "站点域名": "b.example.net",
+        "核验状态": "待核验", "核验依据": "",
+    },
+])
+

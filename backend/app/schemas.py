@@ -29,3 +29,42 @@ class EntryPayload(BaseModel):
 class ActionPayload(BaseModel):
     action: str
     remark: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# 站点来源清册
+# ---------------------------------------------------------------------------
+
+class LedgerEntrySpec(BaseModel):
+    url: str = ""
+    site_id: str = ""
+    site_domain: str = ""
+    note: str = ""
+
+
+class LedgerSubmitPayload(BaseModel):
+    ledger_id: str | None = None
+    name: str = "站点来源清册"
+    operator: str = "值班员"
+    origin: str = "原始提交"
+    note: str = ""
+    site_id: str = ""
+    urls: list[str] | str | None = None
+    entries: list[LedgerEntrySpec] = Field(default_factory=list)
+
+
+class LedgerProofPayload(BaseModel):
+    ledger_id: str
+    site_id: str = ""
+    site_domain: str = ""
+    proof: str
+    operator: str = "核验员"
+    urls: list[str] | str | None = None
+
+
+class LedgerClaimPayload(BaseModel):
+    operator: str = "调度员"
+
+
+class LedgerStorePayload(BaseModel):
+    batch_id: str | None = None

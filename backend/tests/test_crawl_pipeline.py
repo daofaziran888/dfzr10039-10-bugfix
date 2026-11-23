@@ -113,7 +113,8 @@ def test_pipeline_with_multiple_urls() -> None:
 def test_pipeline_handles_empty_url() -> None:
     """空 URL 采集应正确处理并产生错误记录。"""
     job = dict(VALID_JOB)
-    job["入口URL"] = "https://empty.example.com/page"
+    # 入口必须属于作业站点；空页面语义由 URL 路径表达。
+    job["入口URL"] = "https://news.example.com/empty/page"
 
     batch = run_crawl_pipeline(
         site_row=VALID_SITE,
@@ -411,7 +412,7 @@ def test_parse_log_in_pipeline() -> None:
     job["入口URL"] = (
         "https://news.example.com/article/1,"
         "https://news.example.com/error/404,"
-        "https://empty.example.com/page"
+        "https://news.example.com/empty/page"
     )
 
     batch = run_crawl_pipeline(
